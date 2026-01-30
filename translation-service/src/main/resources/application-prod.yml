@@ -1,0 +1,27 @@
+# 生产环境配置 - 使用 127.0.0.1
+
+spring:
+  # MySQL 数据库
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://127.0.0.1:3306/translator?useSSL=false&serverTimezone=Asia/Shanghai&characterEncoding=utf8mb4
+    username: translator
+    password: bLDamrHwnLZC62FE
+
+  # Redis
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 6379
+      password: 
+      database: 0
+      timeout: 3000ms
+
+# LibreTranslate
+libretranslate:
+  url: http://127.0.0.1:5005
+  api-key: ""
+
+logging:
+  level:
+    com.translator: INFO

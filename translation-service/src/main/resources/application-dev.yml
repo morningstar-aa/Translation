@@ -1,0 +1,28 @@
+# 开发环境配置 - 使用服务器 IP
+
+spring:
+  # MySQL 数据库
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://203.91.72.194:3306/translator?useSSL=false&serverTimezone=Asia/Shanghai&characterEncoding=utf8
+    username: translator
+    password: bLDamrHwnLZC62FE
+
+  # Redis
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 6379
+      password: 
+      database: 0
+      timeout: 3000ms
+
+# LibreTranslate
+libretranslate:
+  url: http://203.91.72.194:5005
+  api-key: ""
+
+logging:
+  level:
+    com.translator: DEBUG
+    org.apache.ibatis: DEBUG
