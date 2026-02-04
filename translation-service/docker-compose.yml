@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  # LibreTranslate 翻译引擎
+  libretranslate:
+    image: libretranslate/libretranslate:latest
+    container_name: libretranslate
+    restart: always
+    ports:
+      - "5005:5000"
+    environment:
+      # 如果需要支持所有语言，直接删除 LT_LOAD_ONLY 这一行。
+      # 注意：加载所有语言会下载大量模型（约 5GB+），请确保磁盘空间充足并耐心等待启动。
+      - LT_UPDATE_MODELS=true
+      - LT_DISABLE_FILES_TRANSLATION=true
+      - LT_SUGGESTIONS=false
+    deploy:
+      resources:
+        limits:
+          memory: 4096M
+    volumes:
+      - libretranslate_data:/home/libretranslate/.local/share
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5000/languages || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Java 翻译服务
+  translation-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: translation-service
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - LIBRETRANSLATE_URL=http://libretranslate:5000
+      - SPRING_PROFILES_ACTIVE=prod
+    depends_on:
+      libretranslate:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  libretranslate_data:
+
+networks:
+  default:
+    name: translation-network
