@@ -557,23 +557,10 @@ function injectStyles() {
     }
   `;
 
-    // 副窗口特殊样式：隐藏菜单按钮
+    // 副窗口特殊样式：不再隐藏菜单按钮，允许用户自行切换账号
     if (isSecondaryWindow) {
-        console.log('[Translator] 检测到副窗口，应用精简样式');
-        style.textContent += `
-      /* 隐藏侧边栏头部的菜单按钮 */
-      .sidebar-header .btn-menu,
-      .sidebar-header .btn-icon:not(.btn-new-window):not(.btn-search),
-      .sidebar-header button.btn-icon:first-of-type,
-      .sidebar-header > button:nth-child(1) {
-          display: none !important;
-      }
-      
-      /* 调整搜索框位置，因为左侧按钮没了 */
-      .sidebar-header .input-search {
-          padding-left: 1rem !important;
-      }
-      `;
+        console.log('[Translator] 检测到副窗口，保留菜单按钮以供切换账号');
+        // 可选：添加一些标记样式区分
     }
 
     document.head.appendChild(style);
