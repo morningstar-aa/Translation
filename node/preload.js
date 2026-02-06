@@ -294,25 +294,44 @@ async function processMessage(bubbleElement) {
     if (!isAuthorized) return;
     if (bubbleElement.dataset.translated) return;
 
-    // 获取消息文本，排除时间元素
-    const messageElement = bubbleElement.querySelector('.message.spoilers-container') ||
+    // 1. 尝试标准选择器
+    let messageElement =
+        bubbleElement.querySelector('.media-caption') ||
+        bubbleElement.querySelector('.caption') ||
+        bubbleElement.querySelector('.message.spoilers-container') ||
         bubbleElement.querySelector('.message') ||
-        bubbleElement.querySelector('.text-content');
+        bubbleElement.querySelector('.text-content') ||
+        bubbleElement.querySelector('.message-text');
+
+    // 2. 如果标准选择器失败，尝试在 bubble-content 中寻找非 time 的文本节点
+    if (!messageElement) {
+        const content = bubbleElement.querySelector('.bubble-content');
+        if (content) {
+            // 排除已翻译的文本
+            const potential = Array.from(content.children).find(child =>
+                !child.classList.contains('translated-text') &&
+                !child.classList.contains('time') &&
+                child.textContent.trim().length > 1
+            );
+            if (potential) messageElement = potential;
+        }
+    }
+
     if (!messageElement) return;
 
-    // 克隆元素以便修改
+    // 克隆元素以便修改，避免影响原始 DOM
     const clonedElement = messageElement.cloneNode(true);
 
-    // 移除时间相关元素
-    const timeElements = clonedElement.querySelectorAll('.time, .time-inner, .message-time, [class*="time"], .bubble-time');
-    timeElements.forEach(el => el.remove());
+    // 移除时间、表情符号标记、按钮等杂音
+    const noise = clonedElement.querySelectorAll('.time, .time-inner, .message-time, [class*="time"], .bubble-time, .emoji, .btn-icon');
+    noise.forEach(el => el.remove());
 
     const text = clonedElement.textContent.trim();
     if (!text || text.length < 2) return;
 
-    // 跳过时间格式
-    if (isTimeFormat(text)) {
-        bubbleElement.dataset.translated = 'skip-time';
+    // 跳过纯数字或时间格式
+    if (isTimeFormat(text) || /^\d+$/.test(text)) {
+        bubbleElement.dataset.translated = 'skip-noise';
         return;
     }
 
@@ -323,8 +342,9 @@ async function processMessage(bubbleElement) {
         sourceLang = 'en';
         targetLang = 'zh-CN';
     } else if (containsChinese(text)) {
+        // 只有中文字符占比达到一定程度才翻译为英文，避免误伤
         const chineseChars = text.match(/[\u4e00-\u9fff]/g) || [];
-        if (chineseChars.length > text.replace(/\s/g, '').length * 0.3) {
+        if (chineseChars.length > 0) {
             sourceLang = 'zh-CN';
             targetLang = 'en';
         }
@@ -336,49 +356,101 @@ async function processMessage(bubbleElement) {
     }
 
     bubbleElement.dataset.translated = 'processing';
-    console.log('[Translator] 翻译中:', text.substring(0, 40));
+    console.log('[Translator] 正在处理:', text.substring(0, 30));
 
     const translatedText = await translateText(text, sourceLang, targetLang);
 
     if (translatedText && translatedText.toLowerCase() !== text.toLowerCase()) {
-        const bubbleContent = bubbleElement.querySelector('.bubble-content') || messageElement.parentElement;
-        if (bubbleContent) {
+        // 寻找合适的插入位置：通常是气泡内容的末尾
+        const bubbleContent = bubbleElement.querySelector('.bubble-content') || messageElement.parentElement || bubbleElement;
+
+        // 避免重复插入
+        if (!bubbleContent.querySelector('.translated-text')) {
             bubbleContent.appendChild(createTranslationElement(translatedText));
             bubbleElement.dataset.translated = 'done';
-            console.log('[Translator] ✅', text.substring(0, 20), '->', translatedText.substring(0, 20));
+            console.log('[Translator] ✅ 翻译完成');
         }
     } else {
-        bubbleElement.dataset.translated = 'skip-same';
+        bubbleElement.dataset.translated = 'skip-no-result';
     }
 }
 
 // ========== 发送拦截 ==========
 
+const sendingFlags = new Set(); // 记录正在处理发送的元素
+
 function setupSendInterceptor() {
     document.addEventListener('keydown', async (e) => {
-        if (!isAuthorized) return;
+        try {
+            if (!isAuthorized) return;
 
-        if (e.key === 'Enter' && !e.shiftKey) {
-            const inputField = document.querySelector('.input-message-input');
-            if (!inputField || document.activeElement !== inputField) return;
+            if (e.key === 'Enter' && !e.shiftKey) {
+                const activeEl = document.activeElement;
+                if (!activeEl) return;
 
-            const text = inputField.textContent.trim();
-            if (!text || !containsChinese(text)) return;
+                // 检查是否已经在处理中，防止死循环
+                if (sendingFlags.has(activeEl)) return;
 
-            e.preventDefault();
-            e.stopPropagation();
+                // 识别可输入区域
+                const isContentEditable = activeEl.hasAttribute('contenteditable');
+                const isInputOrTextArea = activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA';
+                if (!isContentEditable && !isInputOrTextArea) return;
 
-            const translated = await translateText(text, 'zh-CN', 'en');
-            if (translated) {
-                inputField.innerHTML = '';
-                inputField.textContent = translated;
-                inputField.dispatchEvent(new InputEvent('input', { bubbles: true }));
+                const text = isContentEditable ? activeEl.innerText : activeEl.value;
+                if (!text || !text.trim()) return;
 
-                setTimeout(() => {
-                    const sendBtn = document.querySelector('.btn-send, .send-button');
-                    if (sendBtn) sendBtn.click();
-                }, 150);
+                // 如果不包含中文，直接让电报处理
+                if (!containsChinese(text)) return;
+
+                // 拦截原生发送
+                e.preventDefault();
+                e.stopImmediatePropagation();
+
+                console.log('[Translator] 拦截并开始翻译:', text.substring(0, 15));
+                sendingFlags.add(activeEl);
+
+                const translated = await translateText(text.trim(), 'zh-CN', 'en');
+
+                if (translated) {
+                    console.log('[Translator] 翻译成功，准备安全注入');
+
+                    if (isContentEditable) {
+                        activeEl.focus();
+                        // 尝试设置新内容。使用 textContent 往往比 innerHTML 更安全
+                        activeEl.textContent = translated;
+                    } else {
+                        activeEl.value = translated;
+                    }
+
+                    // 显式触发输入事件，确保电报识别到变化
+                    activeEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+                    // --- 关键改变：不直接 click 发送按钮，而是模拟一次“非中文”的 Enter ---
+                    setTimeout(() => {
+                        console.log('[Translator] 触发最终发送动作');
+                        // 移除标记，以便下一次按键能正常捕获（虽然我们会立即模拟一次）
+                        sendingFlags.delete(activeEl);
+
+                        // 模拟 Enter 按键。因为此时文字已经是英文，containsChinese(text) 将为 false，
+                        // 本拦截器会直接 return，从而让电报原本的监听器处理这次发送。
+                        activeEl.dispatchEvent(new KeyboardEvent('keydown', {
+                            key: 'Enter',
+                            code: 'Enter',
+                            keyCode: 13,
+                            which: 13,
+                            bubbles: true,
+                            cancelable: true
+                        }));
+                    }, 50);
+                } else {
+                    console.warn('[Translator] 翻译异常，恢复');
+                    sendingFlags.delete(activeEl);
+                }
             }
+        } catch (globalErr) {
+            console.error('[Translator] 发送拦截异常:', globalErr);
+            // 确保标记被清除
+            if (document.activeElement) sendingFlags.delete(document.activeElement);
         }
     }, true);
 }

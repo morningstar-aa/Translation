@@ -68,6 +68,19 @@ function createWindow(isSecondary = false) {
     newWindow = null;
   });
 
+  // 渲染进程崩溃监听
+  newWindow.webContents.on('render-process-gone', (event, details) => {
+    console.error(`[Main] 渲染进程丢失! 原因: ${details.reason}, 退出码: ${details.exitCode}`);
+    if (details.reason === 'crashed' || details.reason === 'oom') {
+      console.warn('[Main] 尝试重新加载页面...');
+      newWindow.reload();
+    }
+  });
+
+  newWindow.webContents.on('unresponsive', () => {
+    console.warn('[Main] 窗口无响应...');
+  });
+
   // 注入自定义 CSS
   newWindow.webContents.on('did-finish-load', () => {
     newWindow.webContents.insertCSS(`
