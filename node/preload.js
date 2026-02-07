@@ -5,7 +5,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 // ========== 配置 ==========
 // 后端服务地址（本地开发用线上，线上部署改为 127.0.0.1）
-const API_BASE_URL = 'https://test.api.shangchenghu.shop';
+const API_BASE_URL = 'https://telegram.api.shangchenghu.shop';
 // const API_BASE_URL = 'http://127.0.0.1:8089';
 // 本地存储 key
 const STORAGE_KEY_TOKEN = 'translator_token';
@@ -377,82 +377,194 @@ async function processMessage(bubbleElement) {
 
 // ========== 发送拦截 ==========
 
-const sendingFlags = new Set(); // 记录正在处理发送的元素
+const sendingFlags = new Set();
+const translatedInputs = new WeakMap(); // 记录已翻译的输入框及其翻译文本
 
 function setupSendInterceptor() {
+    console.log('[Translator] 🚀 发送拦截器已启动');
+
+    // 1. 键盘回车拦截
     document.addEventListener('keydown', async (e) => {
-        try {
-            if (!isAuthorized) return;
-
-            if (e.key === 'Enter' && !e.shiftKey) {
-                const activeEl = document.activeElement;
-                if (!activeEl) return;
-
-                // 检查是否已经在处理中，防止死循环
-                if (sendingFlags.has(activeEl)) return;
-
-                // 识别可输入区域
-                const isContentEditable = activeEl.hasAttribute('contenteditable');
-                const isInputOrTextArea = activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA';
-                if (!isContentEditable && !isInputOrTextArea) return;
-
-                const text = isContentEditable ? activeEl.innerText : activeEl.value;
-                if (!text || !text.trim()) return;
-
-                // 如果不包含中文，直接让电报处理
-                if (!containsChinese(text)) return;
-
-                // 拦截原生发送
-                e.preventDefault();
-                e.stopImmediatePropagation();
-
-                console.log('[Translator] 拦截并开始翻译:', text.substring(0, 15));
-                sendingFlags.add(activeEl);
-
-                const translated = await translateText(text.trim(), 'zh-CN', 'en');
-
-                if (translated) {
-                    console.log('[Translator] 翻译成功，准备安全注入');
-
-                    if (isContentEditable) {
-                        activeEl.focus();
-                        // 尝试设置新内容。使用 textContent 往往比 innerHTML 更安全
-                        activeEl.textContent = translated;
-                    } else {
-                        activeEl.value = translated;
-                    }
-
-                    // 显式触发输入事件，确保电报识别到变化
-                    activeEl.dispatchEvent(new Event('input', { bubbles: true }));
-
-                    // --- 关键改变：不直接 click 发送按钮，而是模拟一次“非中文”的 Enter ---
-                    setTimeout(() => {
-                        console.log('[Translator] 触发最终发送动作');
-                        // 移除标记，以便下一次按键能正常捕获（虽然我们会立即模拟一次）
-                        sendingFlags.delete(activeEl);
-
-                        // 模拟 Enter 按键。因为此时文字已经是英文，containsChinese(text) 将为 false，
-                        // 本拦截器会直接 return，从而让电报原本的监听器处理这次发送。
-                        activeEl.dispatchEvent(new KeyboardEvent('keydown', {
-                            key: 'Enter',
-                            code: 'Enter',
-                            keyCode: 13,
-                            which: 13,
-                            bubbles: true,
-                            cancelable: true
-                        }));
-                    }, 50);
-                } else {
-                    console.warn('[Translator] 翻译异常，恢复');
-                    sendingFlags.delete(activeEl);
-                }
-            }
-        } catch (globalErr) {
-            console.error('[Translator] 发送拦截异常:', globalErr);
-            // 确保标记被清除
-            if (document.activeElement) sendingFlags.delete(document.activeElement);
+        if (!isAuthorized) return;
+        if (e.key === 'Enter' && !e.shiftKey) {
+            console.log('[Translator] 🔍 检测到回车键');
+            await handleOutgoingAction(e, 'keyboard');
         }
     }, true);
+
+    // 2. 点击事件拦截（覆盖所有可能的点击）
+    ['pointerdown', 'mousedown', 'click'].forEach(eventType => {
+        document.addEventListener(eventType, async (e) => {
+            if (!isAuthorized) return;
+
+            // 检查是否点击了发送按钮
+            const sendBtn = e.target.closest(
+                '.btn-send, .send-button, .popup-button.primary, ' +
+                '.modal-footer .btn-primary, .button-send, ' +
+                'button.primary, .btn-primary-blue, ' +
+                '[class*="send"], [class*="Send"]'
+            );
+
+            if (sendBtn) {
+                console.log(`[Translator] 🔍 检测到${eventType}事件点击发送按钮:`, sendBtn.className);
+                // 防止重复拦截同一个按钮的多个事件
+                if (sendBtn.dataset.intercepting) return;
+                await handleOutgoingAction(e, 'click', sendBtn);
+            }
+        }, true);
+    });
+
+    console.log('[Translator] ✅ 发送拦截器配置完成');
+}
+
+/**
+ * 统一处理发送动作
+ */
+async function handleOutgoingAction(event, triggerType, targetBtn = null) {
+    try {
+        console.log(`[Translator] 📥 处理${triggerType}触发的发送动作`);
+
+        // 1. 寻找输入框
+        let inputEl = document.activeElement;
+        console.log('[Translator] 当前焦点元素:', inputEl?.tagName, inputEl?.className);
+
+        const isValidInput = (el) => {
+            return el && (
+                el.hasAttribute('contenteditable') ||
+                el.tagName === 'INPUT' ||
+                el.tagName === 'TEXTAREA'
+            );
+        };
+
+        // 如果焦点不在输入框，尝试查找
+        if (!isValidInput(inputEl)) {
+            console.log('[Translator] 焦点不在输入框，开始搜索...');
+            const selectors = [
+                '.popup-container [contenteditable="true"]',
+                '.modal [contenteditable="true"]',
+                '.caption-input [contenteditable="true"]',
+                '[data-placeholder*="caption"]',
+                '.input-message-input',
+                '.editable-message-input',
+                'div[contenteditable="true"]'
+            ];
+
+            for (const selector of selectors) {
+                inputEl = document.querySelector(selector);
+                if (inputEl) {
+                    console.log('[Translator] ✅ 找到输入框:', selector);
+                    break;
+                }
+            }
+        }
+
+        if (!isValidInput(inputEl)) {
+            console.log('[Translator] ⚠️ 未找到有效输入框，放弃拦截');
+            return;
+        }
+
+        // 防止死循环
+        if (sendingFlags.has(inputEl)) {
+            console.log('[Translator] ⚠️ 输入框正在处理中，跳过');
+            return;
+        }
+
+        // 2. 获取文本
+        const text = (inputEl.innerText || inputEl.textContent || inputEl.value || '').trim();
+        console.log('[Translator] 📝 输入框文本:', text.substring(0, 30) + (text.length > 30 ? '...' : ''));
+
+        if (!text) {
+            console.log('[Translator] ⚠️ 文本为空，放弃拦截');
+            return;
+        }
+
+        // 检查是否是已经翻译过的文本（避免重复翻译）
+        if (translatedInputs.has(inputEl) && translatedInputs.get(inputEl) === text) {
+            console.log('[Translator] ✅ 这是翻译后的文本，允许发送');
+            translatedInputs.delete(inputEl); // 清除标记
+            return; // 不拦截，让它正常发送
+        }
+
+        if (!containsChinese(text)) {
+            console.log('[Translator] ⚠️ 不包含中文，放弃拦截');
+            return;
+        }
+
+        // 3. 拦截事件
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        console.log('[Translator] 🛑 已拦截发送事件');
+
+        if (targetBtn) {
+            targetBtn.dataset.intercepting = 'true';
+        }
+
+        sendingFlags.add(inputEl);
+
+        // 4. 翻译
+        console.log('[Translator] 🌐 开始翻译...');
+        const translated = await translateText(text, 'zh-CN', 'en');
+
+        if (!translated) {
+            console.error('[Translator] ❌ 翻译失败');
+            sendingFlags.delete(inputEl);
+            if (targetBtn) delete targetBtn.dataset.intercepting;
+            return;
+        }
+
+        console.log('[Translator] ✅ 翻译成功:', translated.substring(0, 30) + '...');
+
+        // 5. 注入翻译后的文本
+        if (inputEl.hasAttribute('contenteditable')) {
+            inputEl.innerText = translated;
+        } else {
+            inputEl.value = translated;
+        }
+
+        // 标记这个输入框的文本已经是翻译后的
+        translatedInputs.set(inputEl, translated);
+
+        // 触发输入事件
+        inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+        inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+        console.log('[Translator] ✅ 文本已注入');
+
+        // 6. 延迟后重新触发发送
+        setTimeout(() => {
+            console.log('[Translator] 🚀 准备重新触发发送');
+            sendingFlags.delete(inputEl);
+
+            if (triggerType === 'keyboard') {
+                // 模拟回车
+                console.log('[Translator] ⌨️ 模拟回车键');
+                inputEl.dispatchEvent(new KeyboardEvent('keydown', {
+                    key: 'Enter',
+                    code: 'Enter',
+                    keyCode: 13,
+                    which: 13,
+                    bubbles: true,
+                    cancelable: true
+                }));
+            } else if (targetBtn) {
+                // 模拟点击
+                console.log('[Translator] 🖱️ 模拟点击发送按钮');
+                delete targetBtn.dataset.intercepting;
+
+                // 完整的事件链
+                targetBtn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+                targetBtn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+                targetBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                targetBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                targetBtn.click();
+            }
+
+            console.log('[Translator] ✅ 发送流程完成');
+        }, 150); // 增加延迟确保 DOM 更新
+
+    } catch (err) {
+        console.error('[Translator] ❌ 拦截器异常:', err);
+        sendingFlags.clear();
+    }
 }
 
 // ========== 观察器 ==========
