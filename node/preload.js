@@ -5,7 +5,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 // ========== 配置 ==========
 // 后端服务地址（本地开发用线上，线上部署改为 127.0.0.1）
-const API_BASE_URL = 'https://telegram.api.shangchenghu.shop';
+const API_BASE_URL = 'https://test.api.shangchenghu.shop';
 // const API_BASE_URL = 'http://127.0.0.1:8089';
 // 本地存储 key
 const STORAGE_KEY_TOKEN = 'translator_token';
