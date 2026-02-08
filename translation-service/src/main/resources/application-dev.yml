@@ -14,13 +14,15 @@ spring:
       host: 127.0.0.1
       port: 6379
       password: 
-      database: 0
+      database: 5
       timeout: 3000ms
 
-# LibreTranslate
-libretranslate:
-  url: http://203.91.72.194:5005
-  api-key: ""
+# 翻译服务配置（当前使用）
+translation:
+  api:
+    url: https://translate.jayogo.com/v1/chat/completions
+    key: sk-bnXKw5Y2PSgL3kOKvOYfQNmcsFSBOANFO7HSwu6skJXScV7G
+    model: gpt-3.5-turbo
 
 logging:
   level:
